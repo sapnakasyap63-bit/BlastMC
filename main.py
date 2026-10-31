@@ -41,7 +41,7 @@ Thread(target=run_web, daemon=True).start()
 
 # -------------------- DISCORD BOT --------------------
 intents = discord.Intents.default()
-intents.message_content = True  # Enable Message Content Intent in Developer Portal
+intents.message_content = True  # Developer Portal se Message Content Intent enable hona chahiye
 intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
@@ -129,7 +129,7 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
-    # Keyword auto-responder logic (Sirf Title aur Response, no extra footer/description)
+    # Keyword auto-responder logic
     guild_replies = auto_replies.get(message.guild.id, {})
     content = message.content.strip().lower()
     
@@ -161,13 +161,13 @@ async def on_message(message: discord.Message):
 async def help_prefix(ctx):
     embed = make_embed(
         "📘 SMP Bot Help",
-        "**Prefix:** `?`\\n"
-        "`?dm @user your message` — Send a DM embed via mention (admins only)\\n"
-        "`/ping` — Check bot latency\\n"
-        "`/embed` — Send an embed (admins only)\\n"
-        "`/autoreply add` — Add an auto-reply rule\\n"
-        "`/autoreply remove` — Remove a keyword\\n"
-        "`/autoreply list` — List auto-replies"
+        "**Prefix:** `?`\n\n"
+        "`?dm @user your message` — Send a DM embed via mention (Admins only)\n"
+        "`/ping` — Check bot latency\n"
+        "`/embed` — Send a custom embed (Admins only)\n"
+        "`/autoreply add` — Add keyword auto-reply\n"
+        "`/autoreply remove` — Remove keyword\n"
+        "`/autoreply list` — List all auto-replies"
     )
     await ctx.reply(embed=embed, mention_author=False)
 
@@ -247,7 +247,7 @@ async def autoreply_list(interaction: discord.Interaction):
         mode = v.get("matchmode", "contains")
         lines.append(f"• **{discord.utils.escape_markdown(k)}** (`{mode}`)")
         
-    await interaction.response.send_message(embed=make_embed("⚙️ Auto Replies", "\\n".join(lines)), ephemeral=True)
+    await interaction.response.send_message(embed=make_embed("⚙️ Auto Replies", "\n".join(lines)), ephemeral=True)
 
 bot.tree.add_command(autoreply_group)
 
