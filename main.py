@@ -59,11 +59,9 @@ def load_data():
         for guild_id, values in raw.get("auto_replies", {}).items():
             loaded[int(guild_id)] = {}
             for k, v in values.items():
-                # Backwards compatibility agar purana format string ho
                 if isinstance(v, str):
                     loaded[int(guild_id)][str(k).lower()] = {
                         "title": "🤖 SMP Auto Reply",
-                        "description": v,
                         "response": v,
                         "matchmode": "contains"
                     }
@@ -106,7 +104,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # Detect identical messages sent by this bot within a short window.
     if bot.user and message.author.id == bot.user.id:
         now = time.monotonic()
         fingerprint = (
@@ -132,7 +129,7 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
-    # Keyword auto-responder logic with exact / contains matchmode support
+    # Keyword auto-responder logic
     guild_replies = auto_replies.get(message.guild.id, {})
     content = message.content.strip().lower()
     
@@ -142,15 +139,15 @@ async def on_message(message: discord.Message):
 
         if matchmode == "exact":
             is_match = (content == keyword.lower())
-        else: # contains mode
+        else:
             is_match = bool(re.search(r"(?<!\\w)" + re.escape(keyword) + r"(?!\\w)", content))
 
         if is_match:
-            embed = make_embed(rule.get("title", "🤖 SMP Auto Reply"), rule.get("response", ""))
-            if rule.get("description"):
-                # Agar description alag se di gayi ho toh field ya description update kar sakte hain
-                embed.add_field(name="Details", value=rule.get("description"), inline=False)
-            embed.set_footer(text="BEST FOR MINECRAFT SMP")
+            embed = discord.Embed(
+                title=rule.get("title", ""),
+                description=rule.get("response", ""),
+                color=discord.Color.blurple()
+            )
             try:
                 await message.channel.send(embed=embed)
             except discord.HTTPException:
@@ -168,7 +165,7 @@ async def help_prefix(ctx):
         "`?dm @user your message` — Send a DM embed via mention (admins only)\\n"
         "`/ping` — Check bot latency\\n"
         "`/embed` — Send an embed (admins only)\\n"
-        "`/autoreply add` — Add a keyword auto-reply with title, description, keyword, response & matchmode\\n"
+        "`/autoreply add` — Add an auto-reply rule\\n"
         "`/autoreply remove` — Remove a keyword\\n"
         "`/autoreply list` — List auto-replies"
     )
@@ -199,16 +196,15 @@ autoreply_group = app_commands.Group(name="autoreply", description="Manage keywo
 @autoreply_group.command(name="add", description="Add or update an auto-reply rule.")
 @app_commands.describe(
     title="Title of the embed",
-    description="Description details",
     keyword="Trigger keyword or phrase",
-    response="Text shown inside the reply",
+    response="Text shown inside the embed",
     matchmode="Choose exact match or contains match"
 )
 @app_commands.choices(matchmode=[
     app_commands.Choice(name="Exact Match", value="exact"),
     app_commands.Choice(name="Contains Keyword", value="contains")
 ])
-async def autoreply_add(interaction: discord.Interaction, title: str, description: str, keyword: str, response: str, matchmode: str):
+async def autoreply_add(interaction: discord.Interaction, title: str, keyword: str, response: str, matchmode: str):
     if not admin_interaction(interaction):
         return await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
     
@@ -218,7 +214,6 @@ async def autoreply_add(interaction: discord.Interaction, title: str, descriptio
     
     auto_replies.setdefault(interaction.guild_id, {})[clean_keyword] = {
         "title": title.strip(),
-        "description": description.strip(),
         "response": response.strip(),
         "matchmode": matchmode
     }
@@ -248,7 +243,7 @@ async def autoreply_list(interaction: discord.Interaction):
         return await interaction.response.send_message("No auto-replies configured yet.", ephemeral=True)
     
     lines = []
-    for k, v in list(replies.items()[:30]):
+    for k, v in list(replies.items())[:30]:
         mode = v.get("matchmode", "contains")
         lines.append(f"• **{discord.utils.escape_markdown(k)}** (`{mode}`)")
         
@@ -256,7 +251,7 @@ async def autoreply_list(interaction: discord.Interaction):
 
 bot.tree.add_command(autoreply_group)
 
-# -------------------- UPDATED MENTION DM COMMAND --------------------
+# -------------------- MENTION DM COMMAND --------------------
 @bot.listen("on_message")
 async def handle_dm_prefix(message: discord.Message):
     if message.author.bot or not message.content.startswith("?dm"):
@@ -267,14 +262,11 @@ async def handle_dm_prefix(message: discord.Message):
         await message.reply("❌ Only server administrators can use this command.", mention_author=False)
         return
 
-    # Check if there's a user mentioned directly in the message
     target_user = message.mentions[0] if message.mentions else None
     if not target_user:
-        await message.reply("❌ Usage: `?dm @user your message here` (Kripya user ko mention karein)", mention_author=False)
+        await message.reply("❌ Usage: `?dm @user your message here`", mention_author=False)
         return
 
-    # Extract message text after removing the command and the user mention string
-    # message.content looks like "?dm <@123456789> hello world"
     parts = message.content.split(maxsplit=2)
     if len(parts) < 3:
         await message.reply("❌ Kripya bhejne ke liye message bhi likhein! Usage: `?dm @user your message`", mention_author=False)
