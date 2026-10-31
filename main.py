@@ -129,7 +129,7 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
-    # Keyword auto-responder logic
+    # Keyword auto-responder logic (Sirf Title aur Response, no extra footer/description)
     guild_replies = auto_replies.get(message.guild.id, {})
     content = message.content.strip().lower()
     
