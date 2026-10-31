@@ -46,7 +46,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 recent_bot_messages = {}  # (channel_id, fingerprint) -> timestamp
-auto_replies = {}         # guild_id -> {keyword: response}
+auto_replies = {}         # guild_id -> {keyword: rule_dict}
 data_lock = asyncio.Lock()
 
 def load_data():
@@ -54,10 +54,22 @@ def load_data():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        auto_replies = {
-            int(guild_id): {str(k).lower(): str(v) for k, v in values.items()}
-            for guild_id, values in raw.get("auto_replies", {}).items()
-        }
+        
+        loaded = {}
+        for guild_id, values in raw.get("auto_replies", {}).items():
+            loaded[int(guild_id)] = {}
+            for k, v in values.items():
+                # Backwards compatibility agar purana format string ho
+                if isinstance(v, str):
+                    loaded[int(guild_id)][str(k).lower()] = {
+                        "title": "🤖 SMP Auto Reply",
+                        "description": v,
+                        "response": v,
+                        "matchmode": "contains"
+                    }
+                else:
+                    loaded[int(guild_id)][str(k).lower()] = v
+        auto_replies = loaded
     except FileNotFoundError:
         auto_replies = {}
     except Exception:
@@ -71,11 +83,6 @@ async def save_data():
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         os.replace(tmp, DATA_FILE)
-
-def is_admin():
-    async def predicate(ctx):
-        return ctx.guild is not None and ctx.author.guild_permissions.administrator
-    return commands.check(predicate)
 
 def admin_interaction(interaction: discord.Interaction) -> bool:
     return bool(interaction.guild and interaction.user.guild_permissions.administrator)
@@ -100,7 +107,6 @@ async def on_ready():
 @bot.event
 async def on_message(message: discord.Message):
     # Detect identical messages sent by this bot within a short window.
-    # The first copy stays; later duplicate copies are deleted.
     if bot.user and message.author.id == bot.user.id:
         now = time.monotonic()
         fingerprint = (
@@ -111,7 +117,6 @@ async def on_message(message: discord.Message):
         previous = recent_bot_messages.get(fingerprint)
         recent_bot_messages[fingerprint] = now
 
-        # Prune old entries so this cache stays small.
         for key, stamp in list(recent_bot_messages.items()):
             if now - stamp > DUPLICATE_WINDOW:
                 recent_bot_messages.pop(key, None)
@@ -127,12 +132,24 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
 
-    # Keyword auto-responder: replies with a formatted embed.
+    # Keyword auto-responder logic with exact / contains matchmode support
     guild_replies = auto_replies.get(message.guild.id, {})
-    content = message.content.lower()
-    for keyword, response in guild_replies.items():
-        if keyword and re.search(r"(?<!\\w)" + re.escape(keyword) + r"(?!\\w)", content):
-            embed = make_embed("🤖 SMP Auto Reply", response)
+    content = message.content.strip().lower()
+    
+    for keyword, rule in guild_replies.items():
+        matchmode = rule.get("matchmode", "contains")
+        is_match = False
+
+        if matchmode == "exact":
+            is_match = (content == keyword.lower())
+        else: # contains mode
+            is_match = bool(re.search(r"(?<!\\w)" + re.escape(keyword) + r"(?!\\w)", content))
+
+        if is_match:
+            embed = make_embed(rule.get("title", "🤖 SMP Auto Reply"), rule.get("response", ""))
+            if rule.get("description"):
+                # Agar description alag se di gayi ho toh field ya description update kar sakte hain
+                embed.add_field(name="Details", value=rule.get("description"), inline=False)
             embed.set_footer(text="BEST FOR MINECRAFT SMP")
             try:
                 await message.channel.send(embed=embed)
@@ -148,10 +165,10 @@ async def help_prefix(ctx):
     embed = make_embed(
         "📘 SMP Bot Help",
         "**Prefix:** `?`\\n"
-        "`?dm USER_ID: message` — Send a DM embed (admins only)\\n"
+        "`?dm @user your message` — Send a DM embed via mention (admins only)\\n"
         "`/ping` — Check bot latency\\n"
         "`/embed` — Send an embed (admins only)\\n"
-        "`/autoreply add` — Add a keyword auto-reply\\n"
+        "`/autoreply add` — Add a keyword auto-reply with title, description, keyword, response & matchmode\\n"
         "`/autoreply remove` — Remove a keyword\\n"
         "`/autoreply list` — List auto-replies"
     )
@@ -179,18 +196,35 @@ async def embed_command(interaction: discord.Interaction, title: str, message: s
 
 autoreply_group = app_commands.Group(name="autoreply", description="Manage keyword-based embed auto replies.")
 
-@autoreply_group.command(name="add", description="Add or update a keyword auto-reply.")
-@app_commands.describe(keyword="Word or phrase to detect", response="Text shown inside the reply embed")
-async def autoreply_add(interaction: discord.Interaction, keyword: str, response: str):
+@autoreply_group.command(name="add", description="Add or update an auto-reply rule.")
+@app_commands.describe(
+    title="Title of the embed",
+    description="Description details",
+    keyword="Trigger keyword or phrase",
+    response="Text shown inside the reply",
+    matchmode="Choose exact match or contains match"
+)
+@app_commands.choices(matchmode=[
+    app_commands.Choice(name="Exact Match", value="exact"),
+    app_commands.Choice(name="Contains Keyword", value="contains")
+])
+async def autoreply_add(interaction: discord.Interaction, title: str, description: str, keyword: str, response: str, matchmode: str):
     if not admin_interaction(interaction):
         return await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
-    keyword = keyword.strip().lower()
-    response = response.strip()
-    if not keyword or len(keyword) > 80 or not response or len(response) > 3500:
-        return await interaction.response.send_message("Keyword must be 1–80 chars and response 1–3500 chars.", ephemeral=True)
-    auto_replies.setdefault(interaction.guild_id, {})[keyword] = response
+    
+    clean_keyword = keyword.strip().lower()
+    if not clean_keyword or len(clean_keyword) > 80:
+        return await interaction.response.send_message("❌ Keyword must be between 1 and 80 characters.", ephemeral=True)
+    
+    auto_replies.setdefault(interaction.guild_id, {})[clean_keyword] = {
+        "title": title.strip(),
+        "description": description.strip(),
+        "response": response.strip(),
+        "matchmode": matchmode
+    }
     await save_data()
-    await interaction.response.send_message(f"✅ Auto-reply saved for **{discord.utils.escape_markdown(keyword)}**.", ephemeral=True)
+    
+    await interaction.response.send_message(f"✅ Auto-reply rule added successfully for keyword: **{discord.utils.escape_markdown(clean_keyword)}** (`{matchmode}` mode)", ephemeral=True)
 
 @autoreply_group.command(name="remove", description="Remove a keyword auto-reply.")
 @app_commands.describe(keyword="Keyword to remove")
@@ -212,15 +246,20 @@ async def autoreply_list(interaction: discord.Interaction):
     replies = auto_replies.get(interaction.guild_id, {})
     if not replies:
         return await interaction.response.send_message("No auto-replies configured yet.", ephemeral=True)
-    lines = [f"• **{discord.utils.escape_markdown(k)}**" for k in list(replies)[:40]]
+    
+    lines = []
+    for k, v in list(replies.items()[:30]):
+        mode = v.get("matchmode", "contains")
+        lines.append(f"• **{discord.utils.escape_markdown(k)}** (`{mode}`)")
+        
     await interaction.response.send_message(embed=make_embed("⚙️ Auto Replies", "\\n".join(lines)), ephemeral=True)
 
 bot.tree.add_command(autoreply_group)
 
-# Handle the requested colon format before normal prefix command parsing.
+# -------------------- UPDATED MENTION DM COMMAND --------------------
 @bot.listen("on_message")
 async def handle_dm_prefix(message: discord.Message):
-    if message.author.bot or not message.content.startswith("?dm "):
+    if message.author.bot or not message.content.startswith("?dm"):
         return
     if message.guild is None:
         return
@@ -228,31 +267,31 @@ async def handle_dm_prefix(message: discord.Message):
         await message.reply("❌ Only server administrators can use this command.", mention_author=False)
         return
 
-    payload = message.content[4:].strip()
-    if ":" not in payload:
-        await message.reply("Usage: `?dm USER_ID: your message here`", mention_author=False)
+    # Check if there's a user mentioned directly in the message
+    target_user = message.mentions[0] if message.mentions else None
+    if not target_user:
+        await message.reply("❌ Usage: `?dm @user your message here` (Kripya user ko mention karein)", mention_author=False)
         return
 
-    raw_id, dm_text = payload.split(":", 1)
-    raw_id = raw_id.strip()
-    dm_text = dm_text.strip()
-    if not raw_id.isdigit() or not dm_text:
-        await message.reply("❌ Invalid format. Use `?dm USER_ID: your message here`", mention_author=False)
+    # Extract message text after removing the command and the user mention string
+    # message.content looks like "?dm <@123456789> hello world"
+    parts = message.content.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.reply("❌ Kripya bhejne ke liye message bhi likhein! Usage: `?dm @user your message`", mention_author=False)
         return
+
+    dm_text = parts[2].strip()
     if len(dm_text) > 3500:
         await message.reply("❌ Message is too long (max 3500 characters).", mention_author=False)
         return
 
     try:
-        user = await bot.fetch_user(int(raw_id))
         dm_embed = make_embed("📩 Message from the SMP Team", dm_text)
         dm_embed.set_footer(text=f"Sent by {message.author}")
-        await user.send(embed=dm_embed)
-        await message.reply(f"✅ Embed DM sent to **{discord.utils.escape_markdown(str(user))}**.", mention_author=False)
+        await target_user.send(embed=dm_embed)
+        await message.reply(f"✅ Embed DM sent to **{discord.utils.escape_markdown(str(target_user))}**.", mention_author=False)
     except discord.Forbidden:
-        await message.reply("⚠️ DM could not be sent. The user may have DMs disabled, may have blocked the bot, or may not allow messages from this server.", mention_author=False)
-    except discord.NotFound:
-        await message.reply("❌ No Discord user was found for that ID.", mention_author=False)
+        await message.reply("⚠️ DM could not be sent. The user may have DMs disabled or blocked the bot.", mention_author=False)
     except discord.HTTPException:
         log.exception("DM failed.")
         await message.reply("❌ Discord could not deliver the DM. Please try again later.", mention_author=False)
